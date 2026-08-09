@@ -191,6 +191,46 @@
     transform: translate(-50%, 0);
   }
 
+  .tap-focus-layer{
+    position:absolute; inset:0;
+    z-index: 5;
+  }
+  .focus-ring{
+    position:absolute;
+    width:56px; height:56px;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    top:0; left:0;
+    transform: translate(-50%,-50%) scale(1.3);
+    opacity:0;
+    pointer-events:none;
+  }
+  .focus-ring.show{
+    animation: focusPulse .6s ease-out;
+  }
+  @keyframes focusPulse{
+    0%{ opacity:1; transform: translate(-50%,-50%) scale(1.3); }
+    100%{ opacity:0; transform: translate(-50%,-50%) scale(0.9); }
+  }
+
+  .zoom-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-top:12px;
+    color: var(--text-muted);
+  }
+  .zoom-row input[type="range"]{
+    flex:1;
+    accent-color: var(--accent);
+  }
+  .focus-hint{
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin: 10px 2px 0;
+    line-height:1.5;
+  }
+
   .controls{
     display:flex;
     gap:10px;
@@ -516,8 +556,17 @@
         <div class="scanline"></div>
         <div class="flash" id="flash"></div>
         <div class="detected-badge" id="detectedBadge"></div>
+        <div class="focus-ring" id="focusRing"></div>
       </div>
+      <div class="tap-focus-layer" id="tapFocusLayer"></div>
     </div>
+
+    <div class="zoom-row" id="zoomRow" style="display:none;">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10" cy="10" r="6"/><path d="M20 20l-4.5-4.5M8 10h4"/></svg>
+      <input type="range" id="zoomSlider" min="1" max="5" step="0.1" value="1" />
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10" cy="10" r="6"/><path d="M20 20l-4.5-4.5M8 10h4M10 8v4"/></svg>
+    </div>
+    <p class="focus-hint" id="focusHint" style="display:none;">Si se ve borroso: alejate unos centímetros hasta que enfoque, tocá la imagen para reenfocar, o usá el zoom en vez de acercar el celular.</p>
 
     <div class="controls">
       <button class="primary" id="toggleScanBtn">
@@ -631,6 +680,11 @@
   const statusText = $('statusText');
   const flashEl = $('flash');
   const detectedBadge = $('detectedBadge');
+  const focusRing = $('focusRing');
+  const tapFocusLayer = $('tapFocusLayer');
+  const zoomRow = $('zoomRow');
+  const zoomSlider = $('zoomSlider');
+  const focusHint = $('focusHint');
   const confirmCard = $('confirmCard');
   const confirmCode = $('confirmCode');
   const confirmFormat = $('confirmFormat');
@@ -924,16 +978,37 @@
       );
 
       // Paso 2 (opcional, no puede romper el escaneo): una vez la cámara ya
-      // está encendida, intentar subir la resolución para leer mejor las
-      // barras finas. Si el dispositivo no lo permite, seguimos igual.
+      // está encendida, forzar enfoque continuo y subir resolución para
+      // leer mejor las barras finas. Si el dispositivo no lo permite, seguimos igual.
       try{
         await html5Qrcode.applyVideoConstraints({
           width: { ideal: 1920 },
-          height: { ideal: 1080 }
+          height: { ideal: 1080 },
+          advanced: [{ focusMode: 'continuous' }]
         });
       }catch(resErr){
-        console.warn('No se pudo mejorar la resolución, se sigue con la cámara actual', resErr);
+        console.warn('No se pudo mejorar la resolución/enfoque, se sigue con la cámara actual', resErr);
       }
+
+      // Detectar si el lente soporta zoom óptico/digital vía la API estándar.
+      // Si sí, mostramos el control: así el usuario puede acercar la imagen
+      // SIN acercar el celular (que es justo lo que hace perder el foco).
+      try{
+        const caps = html5Qrcode.getRunningTrackCapabilities ? html5Qrcode.getRunningTrackCapabilities() : null;
+        if(caps && caps.zoom && caps.zoom.max > caps.zoom.min){
+          zoomSlider.min = caps.zoom.min;
+          zoomSlider.max = caps.zoom.max;
+          zoomSlider.step = caps.zoom.step || 0.1;
+          const settings = html5Qrcode.getRunningTrackSettings ? html5Qrcode.getRunningTrackSettings() : {};
+          zoomSlider.value = settings.zoom || caps.zoom.min;
+          zoomRow.style.display = 'flex';
+        } else {
+          zoomRow.style.display = 'none';
+        }
+      }catch(zoomCapErr){
+        zoomRow.style.display = 'none';
+      }
+      focusHint.style.display = 'block';
 
       scanning = true;
       viewfinderWrap.classList.remove('inactive');
@@ -970,6 +1045,44 @@
     }
   }
 
+  zoomSlider.addEventListener('input', async () => {
+    if(!html5Qrcode || !scanning) return;
+    try{
+      await html5Qrcode.applyVideoConstraints({
+        advanced: [{ zoom: parseFloat(zoomSlider.value) }]
+      });
+    }catch(e){
+      console.warn('No se pudo aplicar zoom', e);
+    }
+  });
+
+  tapFocusLayer.addEventListener('click', async (e) => {
+    if(!scanning) return;
+    const rect = tapFocusLayer.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    focusRing.style.left = x + 'px';
+    focusRing.style.top = y + 'px';
+    focusRing.classList.remove('show');
+    void focusRing.offsetWidth;
+    focusRing.classList.add('show');
+
+    // Best-effort: forzar un ciclo de reenfoque. No todos los navegadores
+    // soportan foco por punto de interés, pero re-aplicar el modo continuo
+    // suele disparar un nuevo intento de enfoque en Chrome Android.
+    if(html5Qrcode && scanning){
+      try{
+        const xNorm = Math.min(Math.max(x / rect.width, 0), 1);
+        const yNorm = Math.min(Math.max(y / rect.height, 0), 1);
+        await html5Qrcode.applyVideoConstraints({
+          advanced: [{ focusMode: 'continuous', pointsOfInterest: [{ x: xNorm, y: yNorm }] }]
+        });
+      }catch(e){
+        try{ await html5Qrcode.applyVideoConstraints({ advanced: [{ focusMode: 'continuous' }] }); }catch(e2){}
+      }
+    }
+  });
+
   async function stopScanner(){
     if(!scanning || !html5Qrcode) return;
     awaitingUserConfirm = false;
@@ -982,6 +1095,8 @@
     viewfinderWrap.classList.add('inactive');
     statusPill.classList.remove('live');
     statusText.textContent = 'Inactivo';
+    zoomRow.style.display = 'none';
+    focusHint.style.display = 'none';
     toggleScanBtn.classList.remove('stop');
     toggleScanBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3v4M3 5h4M19 17v4M17 19h4M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/></svg> Iniciar escaneo`;
   }

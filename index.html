@@ -882,6 +882,7 @@
 
   async function startScanner(){
     if(scanning) return;
+    toggleScanBtn.disabled = true;
     try{
       const formats = [
         Html5QrcodeSupportedFormats.CODE_128,
@@ -914,24 +915,26 @@
         disableFlip: false
       };
 
+      // Paso 1: iniciar con la configuración simple (esta es la que sí venía funcionando).
+      await html5Qrcode.start(
+        { facingMode: 'environment' },
+        scanConfig,
+        onScanSuccess,
+        () => {}
+      );
+
+      // Paso 2 (opcional, no puede romper el escaneo): una vez la cámara ya
+      // está encendida, intentar subir la resolución para leer mejor las
+      // barras finas. Si el dispositivo no lo permite, seguimos igual.
       try{
-        // Intento 1: pedir buena resolución para leer mejor las barras finas
-        await html5Qrcode.start(
-          { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
-          scanConfig,
-          onScanSuccess,
-          () => {}
-        );
-      }catch(highResErr){
-        // Intento 2: el dispositivo no soporta esa resolución exacta, reintentar simple
-        console.warn('Reintentando cámara sin restricción de resolución', highResErr);
-        await html5Qrcode.start(
-          { facingMode: 'environment' },
-          scanConfig,
-          onScanSuccess,
-          () => {}
-        );
+        await html5Qrcode.applyVideoConstraints({
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        });
+      }catch(resErr){
+        console.warn('No se pudo mejorar la resolución, se sigue con la cámara actual', resErr);
       }
+
       scanning = true;
       viewfinderWrap.classList.remove('inactive');
       statusPill.classList.add('live');
@@ -940,8 +943,30 @@
       toggleScanBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Detener escaneo`;
     }catch(err){
       console.error(err);
-      const reason = (err && (err.message || err.name)) ? `: ${err.message || err.name}` : '';
+      // Liberar cualquier cámara que haya quedado a medio iniciar, para que
+      // el próximo intento no falle por "cámara ocupada".
+      if(html5Qrcode){
+        try{ await html5Qrcode.stop(); }catch(e){}
+        try{ html5Qrcode.clear(); }catch(e){}
+        html5Qrcode = null;
+      }
+      let reason = '';
+      if(err){
+        const name = err.name || '';
+        const msg = err.message || String(err);
+        if(name === 'NotAllowedError'){
+          reason = ': permiso de cámara bloqueado. Tocá el ícono de candado/info junto a la URL y habilitá "Cámara" para este sitio.';
+        } else if(name === 'NotFoundError'){
+          reason = ': no se encontró ninguna cámara en el dispositivo.';
+        } else if(name === 'NotReadableError'){
+          reason = ': la cámara está siendo usada por otra app o pestaña. Cerrala e intentá de nuevo.';
+        } else {
+          reason = `: ${name || msg}`;
+        }
+      }
       showToast('No se pudo acceder a la cámara' + reason, true);
+    } finally {
+      toggleScanBtn.disabled = false;
     }
   }
 

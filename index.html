@@ -610,16 +610,6 @@
   let items = [];
   let html5Qrcode = null;
   let scanning = false;
-  let lastCode = null;
-  let lastScanTime = 0;
-  const COOLDOWN_MS = 1800;
-
-  // Confirmación de doble lectura: evita falsos positivos de un solo frame
-  let pendingCode = null;
-  let pendingFormat = null;
-  let pendingCount = 0;
-  let pendingFirstSeen = 0;
-  const CONFIRM_WINDOW_MS = 1500;
   let awaitingUserConfirm = false;
 
   const FORMAT_OPTIONS = ['EAN-13','EAN-8','UPC-A','UPC-E','Code 128','Code 39','Code 93','Codabar','ITF','QR','Data Matrix','PDF417','Aztec','Desconocido'];
@@ -834,10 +824,7 @@
   };
 
   function onScanSuccess(decodedText, decodedResult){
-    if(awaitingUserConfirm) return; // ya hay un código esperando revisión, ignorar nuevas lecturas
-
-    const now = Date.now();
-    if(decodedText === lastCode && (now - lastScanTime) < COOLDOWN_MS) return;
+    if(awaitingUserConfirm) return; // ya hay un código esperando revisión, ignorar nuevas lecturas hasta resolverlo
 
     let formatName = 'Desconocido';
     try{
@@ -845,35 +832,9 @@
       formatName = FORMAT_LABELS[raw] || raw || 'Desconocido';
     }catch(e){}
 
-    // Sistema de doble lectura: solo se acepta un código si se lee igual
-    // dos veces seguidas dentro de una ventana corta. Esto filtra lecturas
-    // erróneas de un único frame (muy comunes con etiquetas borrosas/inclinadas).
-    if(pendingCode === decodedText && (now - pendingFirstSeen) < CONFIRM_WINDOW_MS){
-      pendingCount += 1;
-    } else {
-      pendingCode = decodedText;
-      pendingFormat = formatName;
-      pendingCount = 1;
-      pendingFirstSeen = now;
-    }
-
     flashEl.classList.remove('on');
     void flashEl.offsetWidth;
     flashEl.classList.add('on');
-
-    if(pendingCount < 2){
-      detectedBadge.textContent = `Confirmando lectura...`;
-      detectedBadge.classList.add('show');
-      return;
-    }
-
-    // Confirmado por doble lectura: pausar y pedir revisión al usuario
-    lastCode = decodedText;
-    lastScanTime = now;
-    pendingCode = null;
-    pendingCount = 0;
-
-    detectedBadge.classList.remove('show');
     if(navigator.vibrate) navigator.vibrate(60);
 
     openConfirmCard(decodedText, formatName);
@@ -882,19 +843,29 @@
   function openConfirmCard(code, format){
     awaitingUserConfirm = true;
     if(html5Qrcode && scanning){
-      try{ html5Qrcode.pause(true); }catch(e){}
+      try{ html5Qrcode.pause(); }catch(e){}
     }
+    statusText.textContent = 'Pausado · revisá el código';
     confirmCode.value = code;
     confirmFormat.value = FORMAT_OPTIONS.includes(format) ? format : 'Desconocido';
     confirmCard.style.display = 'block';
     confirmCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    confirmCode.focus();
+    confirmCode.select();
   }
 
-  function closeConfirmCard(){
+  async function closeConfirmCard(){
     awaitingUserConfirm = false;
     confirmCard.style.display = 'none';
-    if(html5Qrcode && scanning){
-      try{ html5Qrcode.resume(); }catch(e){}
+    if(scanning && html5Qrcode){
+      try{
+        html5Qrcode.resume();
+        statusText.textContent = 'Escaneando';
+      }catch(e){
+        // si resume() falla, reiniciamos el escáner por completo para no dejarlo trabado
+        await stopScanner();
+        await startScanner();
+      }
     }
   }
 
@@ -913,36 +884,33 @@
     if(scanning) return;
     try{
       const formats = [
-        Html5QrcodeSupportedFormats.QR_CODE,
+        Html5QrcodeSupportedFormats.CODE_128,
+        Html5QrcodeSupportedFormats.CODE_39,
+        Html5QrcodeSupportedFormats.CODE_93,
         Html5QrcodeSupportedFormats.EAN_13,
         Html5QrcodeSupportedFormats.EAN_8,
         Html5QrcodeSupportedFormats.UPC_A,
         Html5QrcodeSupportedFormats.UPC_E,
-        Html5QrcodeSupportedFormats.UPC_EAN_EXTENSION,
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.CODE_93,
         Html5QrcodeSupportedFormats.CODABAR,
         Html5QrcodeSupportedFormats.ITF,
+        Html5QrcodeSupportedFormats.QR_CODE,
         Html5QrcodeSupportedFormats.DATA_MATRIX,
         Html5QrcodeSupportedFormats.PDF_417,
         Html5QrcodeSupportedFormats.AZTEC
       ];
       html5Qrcode = new Html5Qrcode('reader', {
         formatsToSupport: formats,
-        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
         verbose: false
       });
       await html5Qrcode.start(
         { facingMode: 'environment' },
         {
-          fps: 15,
+          fps: 10,
           qrbox: (viewfinderWidth, viewfinderHeight) => {
-            const w = Math.round(viewfinderWidth * 0.85);
-            const h = Math.round(viewfinderHeight * 0.4);
+            const w = Math.round(Math.min(viewfinderWidth, viewfinderHeight) * 0.85);
+            const h = Math.round(w * 0.55);
             return { width: w, height: h };
           },
-          aspectRatio: 1.333334,
           disableFlip: false
         },
         onScanSuccess,
@@ -964,8 +932,6 @@
     if(!scanning || !html5Qrcode) return;
     awaitingUserConfirm = false;
     confirmCard.style.display = 'none';
-    pendingCode = null;
-    pendingCount = 0;
     try{
       await html5Qrcode.stop();
       html5Qrcode.clear();

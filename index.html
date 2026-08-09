@@ -903,12 +903,18 @@
         verbose: false
       });
       await html5Qrcode.start(
-        { facingMode: 'environment' },
+        {
+          facingMode: 'environment',
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        },
         {
           fps: 10,
           qrbox: (viewfinderWidth, viewfinderHeight) => {
-            const w = Math.round(Math.min(viewfinderWidth, viewfinderHeight) * 0.85);
-            const h = Math.round(w * 0.55);
+            // Recuadro ANCHO y bajo: los códigos de barras 1D son horizontales
+            // y deben entrar completos (de punta a punta) dentro del recuadro.
+            const w = Math.round(viewfinderWidth * 0.92);
+            const h = Math.round(Math.min(viewfinderHeight * 0.85, w * 0.32));
             return { width: w, height: h };
           },
           disableFlip: false

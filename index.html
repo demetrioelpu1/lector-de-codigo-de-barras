@@ -943,15 +943,18 @@
         Html5QrcodeSupportedFormats.CODE_39,
         Html5QrcodeSupportedFormats.CODE_93,
         Html5QrcodeSupportedFormats.EAN_13,
-        Html5QrcodeSupportedFormats.EAN_8,
         Html5QrcodeSupportedFormats.UPC_A,
-        Html5QrcodeSupportedFormats.UPC_E,
         Html5QrcodeSupportedFormats.CODABAR,
         Html5QrcodeSupportedFormats.ITF,
         Html5QrcodeSupportedFormats.QR_CODE,
         Html5QrcodeSupportedFormats.DATA_MATRIX,
         Html5QrcodeSupportedFormats.PDF_417,
         Html5QrcodeSupportedFormats.AZTEC
+        // Nota: UPC-E y EAN-8 quedaron afuera a propósito. Son formatos muy
+        // cortos/comprimidos y con este decodificador generan falsos positivos
+        // frecuentes sobre etiquetas Code128/Code39 (justo lo que te pasó).
+        // Si en algún momento necesitás escanear productos de supermercado
+        // reales con UPC-E, avisame y lo reactivamos.
       ];
       html5Qrcode = new Html5Qrcode('reader', {
         formatsToSupport: formats,

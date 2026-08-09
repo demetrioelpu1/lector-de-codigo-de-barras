@@ -902,26 +902,36 @@
         formatsToSupport: formats,
         verbose: false
       });
-      await html5Qrcode.start(
-        {
-          facingMode: 'environment',
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
+      const scanConfig = {
+        fps: 10,
+        qrbox: (viewfinderWidth, viewfinderHeight) => {
+          // Recuadro ANCHO y bajo: los códigos de barras 1D son horizontales
+          // y deben entrar completos (de punta a punta) dentro del recuadro.
+          const w = Math.round(viewfinderWidth * 0.92);
+          const h = Math.round(Math.min(viewfinderHeight * 0.85, w * 0.32));
+          return { width: w, height: h };
         },
-        {
-          fps: 10,
-          qrbox: (viewfinderWidth, viewfinderHeight) => {
-            // Recuadro ANCHO y bajo: los códigos de barras 1D son horizontales
-            // y deben entrar completos (de punta a punta) dentro del recuadro.
-            const w = Math.round(viewfinderWidth * 0.92);
-            const h = Math.round(Math.min(viewfinderHeight * 0.85, w * 0.32));
-            return { width: w, height: h };
-          },
-          disableFlip: false
-        },
-        onScanSuccess,
-        () => {}
-      );
+        disableFlip: false
+      };
+
+      try{
+        // Intento 1: pedir buena resolución para leer mejor las barras finas
+        await html5Qrcode.start(
+          { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+          scanConfig,
+          onScanSuccess,
+          () => {}
+        );
+      }catch(highResErr){
+        // Intento 2: el dispositivo no soporta esa resolución exacta, reintentar simple
+        console.warn('Reintentando cámara sin restricción de resolución', highResErr);
+        await html5Qrcode.start(
+          { facingMode: 'environment' },
+          scanConfig,
+          onScanSuccess,
+          () => {}
+        );
+      }
       scanning = true;
       viewfinderWrap.classList.remove('inactive');
       statusPill.classList.add('live');
@@ -930,7 +940,8 @@
       toggleScanBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Detener escaneo`;
     }catch(err){
       console.error(err);
-      showToast('No se pudo acceder a la cámara', true);
+      const reason = (err && (err.message || err.name)) ? `: ${err.message || err.name}` : '';
+      showToast('No se pudo acceder a la cámara' + reason, true);
     }
   }
 

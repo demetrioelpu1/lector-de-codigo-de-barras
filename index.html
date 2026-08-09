@@ -248,6 +248,54 @@
   .manual-row input{ flex: 1 1 160px; min-width:120px; }
   .manual-row select{ flex: 0 0 auto; font-family:'Inter',sans-serif; }
 
+  .confirm-card{
+    margin-top: 14px;
+    border: 1px solid rgba(255,176,32,0.4);
+    background: var(--warn-soft);
+    border-radius: 12px;
+    padding: 14px;
+  }
+  .confirm-head{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    color: var(--warn);
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600;
+    font-size: 13.5px;
+    margin-bottom: 12px;
+  }
+  .confirm-field{
+    margin-bottom: 10px;
+  }
+  .confirm-field label{
+    display:block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--text-muted);
+    margin-bottom: 5px;
+    font-family:'Inter', sans-serif;
+    font-weight:600;
+  }
+  .confirm-input{
+    width:100%;
+    font-family:'IBM Plex Mono', monospace;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 9px;
+    padding: 9px 11px;
+    font-size: 13.5px;
+  }
+  select.confirm-input{ font-family:'Inter', sans-serif; }
+  .confirm-actions{
+    display:flex;
+    gap:8px;
+    margin-top: 12px;
+  }
+  .confirm-actions button{ flex:1; justify-content:center; }
+
   .toolbar{
     display:flex;
     align-items:center;
@@ -496,6 +544,25 @@
       </select>
       <button class="primary" id="manualAddBtn">Agregar</button>
     </div>
+
+    <div class="confirm-card" id="confirmCard" style="display:none;">
+      <div class="confirm-head">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9L2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <span>Revisá antes de agregar</span>
+      </div>
+      <div class="confirm-field">
+        <label>Código</label>
+        <input type="text" id="confirmCode" class="confirm-input" />
+      </div>
+      <div class="confirm-field">
+        <label>Formato</label>
+        <select id="confirmFormat" class="confirm-input"></select>
+      </div>
+      <div class="confirm-actions">
+        <button class="ghost" id="discardBtn">Descartar</button>
+        <button class="primary" id="confirmAddBtn">Agregar a la tabla</button>
+      </div>
+    </div>
   </div>
 
   <div class="panel">
@@ -547,6 +614,16 @@
   let lastScanTime = 0;
   const COOLDOWN_MS = 1800;
 
+  // Confirmación de doble lectura: evita falsos positivos de un solo frame
+  let pendingCode = null;
+  let pendingFormat = null;
+  let pendingCount = 0;
+  let pendingFirstSeen = 0;
+  const CONFIRM_WINDOW_MS = 1500;
+  let awaitingUserConfirm = false;
+
+  const FORMAT_OPTIONS = ['EAN-13','EAN-8','UPC-A','UPC-E','Code 128','Code 39','Code 93','Codabar','ITF','QR','Data Matrix','PDF417','Aztec','Desconocido'];
+
   const $ = (id) => document.getElementById(id);
   const tableBody = $('tableBody');
   const countChip = $('countChip');
@@ -564,6 +641,13 @@
   const statusText = $('statusText');
   const flashEl = $('flash');
   const detectedBadge = $('detectedBadge');
+  const confirmCard = $('confirmCard');
+  const confirmCode = $('confirmCode');
+  const confirmFormat = $('confirmFormat');
+  const confirmAddBtn = $('confirmAddBtn');
+  const discardBtn = $('discardBtn');
+
+  confirmFormat.innerHTML = FORMAT_OPTIONS.map(f => `<option value="${f}">${f}</option>`).join('');
 
   function showToast(msg, warn){
     const t = $('toast');
@@ -750,10 +834,10 @@
   };
 
   function onScanSuccess(decodedText, decodedResult){
+    if(awaitingUserConfirm) return; // ya hay un código esperando revisión, ignorar nuevas lecturas
+
     const now = Date.now();
     if(decodedText === lastCode && (now - lastScanTime) < COOLDOWN_MS) return;
-    lastCode = decodedText;
-    lastScanTime = now;
 
     let formatName = 'Desconocido';
     try{
@@ -761,19 +845,69 @@
       formatName = FORMAT_LABELS[raw] || raw || 'Desconocido';
     }catch(e){}
 
+    // Sistema de doble lectura: solo se acepta un código si se lee igual
+    // dos veces seguidas dentro de una ventana corta. Esto filtra lecturas
+    // erróneas de un único frame (muy comunes con etiquetas borrosas/inclinadas).
+    if(pendingCode === decodedText && (now - pendingFirstSeen) < CONFIRM_WINDOW_MS){
+      pendingCount += 1;
+    } else {
+      pendingCode = decodedText;
+      pendingFormat = formatName;
+      pendingCount = 1;
+      pendingFirstSeen = now;
+    }
+
     flashEl.classList.remove('on');
     void flashEl.offsetWidth;
     flashEl.classList.add('on');
 
-    detectedBadge.textContent = `${formatName} · ${decodedText}`;
-    detectedBadge.classList.add('show');
-    clearTimeout(detectedBadge._t);
-    detectedBadge._t = setTimeout(() => detectedBadge.classList.remove('show'), 1600);
+    if(pendingCount < 2){
+      detectedBadge.textContent = `Confirmando lectura...`;
+      detectedBadge.classList.add('show');
+      return;
+    }
 
+    // Confirmado por doble lectura: pausar y pedir revisión al usuario
+    lastCode = decodedText;
+    lastScanTime = now;
+    pendingCode = null;
+    pendingCount = 0;
+
+    detectedBadge.classList.remove('show');
     if(navigator.vibrate) navigator.vibrate(60);
 
-    addOrIncrement(decodedText, formatName);
+    openConfirmCard(decodedText, formatName);
   }
+
+  function openConfirmCard(code, format){
+    awaitingUserConfirm = true;
+    if(html5Qrcode && scanning){
+      try{ html5Qrcode.pause(true); }catch(e){}
+    }
+    confirmCode.value = code;
+    confirmFormat.value = FORMAT_OPTIONS.includes(format) ? format : 'Desconocido';
+    confirmCard.style.display = 'block';
+    confirmCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function closeConfirmCard(){
+    awaitingUserConfirm = false;
+    confirmCard.style.display = 'none';
+    if(html5Qrcode && scanning){
+      try{ html5Qrcode.resume(); }catch(e){}
+    }
+  }
+
+  confirmAddBtn.addEventListener('click', () => {
+    const code = confirmCode.value.trim();
+    if(!code){ confirmCode.focus(); return; }
+    addOrIncrement(code, confirmFormat.value);
+    closeConfirmCard();
+  });
+
+  discardBtn.addEventListener('click', () => {
+    closeConfirmCard();
+  });
 
   async function startScanner(){
     if(scanning) return;
@@ -828,6 +962,10 @@
 
   async function stopScanner(){
     if(!scanning || !html5Qrcode) return;
+    awaitingUserConfirm = false;
+    confirmCard.style.display = 'none';
+    pendingCode = null;
+    pendingCount = 0;
     try{
       await html5Qrcode.stop();
       html5Qrcode.clear();
